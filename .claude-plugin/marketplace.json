@@ -1,0 +1,20 @@
+{
+  "name": "aios-skills",
+  "owner": {
+    "name": "Marc Domancie"
+  },
+  "description": "AIOS Skills — Claude Code skills from the AI Systems Club.",
+  "metadata": {
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "codex-image",
+      "source": "codex-image",
+      "description": "Generate images via OpenAI's image model on your ChatGPT/Codex subscription — no API key, no per-image dollar cost.",
+      "category": "design",
+      "author": { "name": "Marc Domancie" },
+      "keywords": ["image-generation", "codex", "chatgpt", "openai", "design"]
+    }
+  ]
+}
