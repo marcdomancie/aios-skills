@@ -39,19 +39,39 @@ No `OPENAI_API_KEY` needed — auth is Codex's own (`~/.codex/auth.json` in `aut
 Just ask naturally (the description triggers it), or call it directly:
 
 ```
-/codex-image a neon synthwave skyline, 1536x1024
+/codex-image a neon synthwave skyline, wide landscape banner
 "make an image of a friendly orange robot with Codex"
-"generate a 1024x1024 app icon on my ChatGPT plan"
+"generate a square app icon on my ChatGPT plan, 1024x1024"
+"recreate this in the style of ~/assets/reference.jpg"
 ```
 
 The generated PNG saves to wherever you ask (default: current folder) and shows inline.
+
+### Sizes — how they actually work
+
+Codex's built-in image tool is **prompt-only**: it picks its own dimensions (~1–2.2 MP) and
+silently ignores explicit pixel requests. What works:
+
+- **Aspect ratio** steers reliably via wording — *square*, *wide landscape banner* (~2.4:1),
+  *portrait*. Max ~3:1.
+- **Exact dimensions** (1080x1080, 1280x720, …) — the skill has Codex resize the render locally
+  with PIL LANCZOS after generation. Upscales add pixels, not detail; native detail tops out
+  around 2 MP. (The API's native-4K `size`/`quality` params need an `OPENAI_API_KEY` — not this
+  ChatGPT-auth path.)
+
+### Reference images & edits
+
+Point it at any image file on disk and it can use it as a style reference, edit target, or
+compositing input — style transfer, object replacement, text replacement, sketch-to-render.
+Transparent backgrounds work via Codex's built-in chroma-key + local removal pipeline (just ask
+for "a transparent PNG").
 
 ## How it runs (the load-bearing bits)
 
 ```bash
 CODEX="$(command -v codex || echo /Applications/Codex.app/Contents/Resources/codex)"
 "$CODEX" exec --skip-git-repo-check -s workspace-write -c model_reasoning_effort="low" \
-  "Generate ONE image at 1024x1024 and save it as ./out.png ... Subject: <prompt>." </dev/null
+  "Generate ONE image in square composition. Subject: <prompt>. Then resize to EXACTLY 1080x1080 with Python PIL LANCZOS and save as ./out.png ..." </dev/null
 ```
 
 - `--skip-git-repo-check` — Codex otherwise refuses to run outside a trusted/git dir.
