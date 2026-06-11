@@ -11,17 +11,35 @@ per-image dollar cost; it consumes your ChatGPT/Codex usage limits). The bundled
 tool renders the PNG; save it where the user wants and Read it back so it shows inline.
 
 ## Prerequisites
-- **Codex** installed — the desktop app (`/Applications/Codex.app`, which bundles the CLI at
-  `Contents/Resources/codex`) or the standalone `codex` CLI on PATH.
+- **Codex** installed:
+  - macOS: the desktop app (`/Applications/Codex.app`, bundles the CLI at `Contents/Resources/codex`)
+    or the standalone `codex` CLI on PATH.
+  - Windows: the official installer `powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"`
+    (puts `codex.exe` in `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` and adds it to the user PATH),
+    or `npm install -g @openai/codex`, or WSL2.
+  - Linux: `curl -fsSL https://chatgpt.com/codex/install.sh | sh` or npm.
 - Codex signed in with a **ChatGPT plan**: run `codex login` (NOT an API key). It works when
-  `~/.codex/auth.json` shows `auth_mode: chatgpt`.
+  `~/.codex/auth.json` shows `auth_mode: chatgpt` (`%USERPROFILE%\.codex\auth.json` on Windows —
+  same `~/.codex` path inside Git Bash).
 
 ## How to run
 
-1. Resolve the Codex binary — prefer PATH, fall back to the macOS app bundle:
+1. Resolve the Codex binary — PATH first, then known per-OS install locations:
    ```bash
-   CODEX="$(command -v codex || echo /Applications/Codex.app/Contents/Resources/codex)"
+   CODEX="$(command -v codex || command -v codex.exe || true)"
+   if [ -z "$CODEX" ]; then for c in \
+     "/Applications/Codex.app/Contents/Resources/codex" \
+     "$LOCALAPPDATA/Programs/OpenAI/Codex/bin/codex.exe" \
+     "$USERPROFILE/.codex/packages/standalone/current/bin/codex.exe" \
+     "$APPDATA/npm/codex.cmd"; do
+     [ -x "$c" ] && CODEX="$c" && break
+   done; fi
    ```
+   Still empty? Diagnose instead of giving up — the user may have installed Codex another way:
+   try `powershell -c "Get-Command codex"` and `where codex` (Windows), `npm prefix -g` (then look
+   for `codex.cmd` there), or `wsl -e which codex` (if it's in WSL2, run the whole command below
+   prefixed with `wsl -e`). As a last resort, ask the user how/where they installed Codex and use
+   that path.
 
 2. Run it non-interactively. Choose an output path (default: `./<short-slug>.png` in the current
    working directory, or wherever the user asked):
@@ -45,6 +63,9 @@ tool renders the PNG; save it where the user wants and Read it back so it shows 
   `1024x1536` (portrait).
 
 ## Notes
+- Windows: Claude Code's Bash tool runs in Git Bash, so the snippets above work as-is
+  (`~` = `%USERPROFILE%`, Windows env vars like `$LOCALAPPDATA` are inherited). Generated
+  images land in `%USERPROFILE%\.codex\generated_images\` just like on macOS/Linux.
 - Usage counts against your ChatGPT/Codex plan limits, not API billing.
 - For several images, ask Codex for variations in one call, or loop the command.
 - Swap in `-m <model>` to force a cheaper/faster agent model.
