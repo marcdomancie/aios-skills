@@ -1,7 +1,7 @@
 {
   "name": "codex-image",
   "description": "Generate images via OpenAI's image model on your ChatGPT/Codex subscription \u2014 no OpenAI API key, no per-image dollar cost (it draws on your ChatGPT/Codex plan limits).",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "author": {
     "name": "Marc Domancie"
   },

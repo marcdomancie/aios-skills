@@ -99,31 +99,39 @@ warning whose image had actually rendered fine). Reserve subagents for work that
    **diversify setting + wardrobe in the prompts up front**, or you get five different-but-samey
    shots that read as duplicates.
 
-**Reference pool (portable — see cross-platform notes below):**
+**Reference batch — single-wave + hardened (portable; see cross-platform notes):**
 ```bash
 CODEX="$(command -v codex || echo /Applications/Codex.app/Contents/Resources/codex)"
 PY="$(command -v python3 || command -v python)"
-WORK=/tmp/imgbatch; mkdir -p "$WORK"; i=0
+WORK=/tmp/imgbatch; mkdir -p "$WORK"; rm -f "$WORK/USAGE_LIMIT"
 ENTRIES=("slug1|||scene one" "slug2|||scene two")          # one element per image
-for e in "${ENTRIES[@]}"; do                               # element-iteration: identical in zsh & bash
-  scene="${e##*|||}"
+job() {                                                    # generate-only → resolve OWN session → place → tick
+  local slug="$1" body="$2" log="$WORK/log-$3.txt"
   "$CODEX" exec --skip-git-repo-check -s workspace-write -c model_reasoning_effort="low" \
-    "<PREAMBLE> SCENE: $scene  Just generate the image; do not resize." </dev/null >"$WORK/log-$i.txt" 2>&1 &
-  i=$((i+1)); done
-wait
+    "<PREAMBLE> SCENE: $body  Just generate the image; do not resize." </dev/null >"$log" 2>&1
+  grep -q "hit your usage limit" "$log" && { echo "  ⛔ usage-limit $slug"; touch "$WORK/USAGE_LIMIT"; return; }
+  local sid img=""; sid=$(grep -m1 'session id:' "$log" | awk '{print $NF}')
+  [ -n "$sid" ] && img=$(find "$HOME/.codex/generated_images/$sid" -name 'ig_*.png' 2>/dev/null | head -1)  # find: no zsh "no matches found"
+  if [ -n "$img" ]; then
+    "$PY" -c "from PIL import Image,ImageOps; ImageOps.fit(Image.open('$img'),(1080,1920),Image.LANCZOS).save('OUTDIR/$slug.png')" \
+      && echo "  ✓ $slug" || echo "  ✗ resize $slug"     # live progress tick per completion
+  else echo "  ✗ gen $slug"; fi
+}
 i=0
-for e in "${ENTRIES[@]}"; do
-  slug="${e%%|||*}"; sid=$(grep -m1 'session id:' "$WORK/log-$i.txt" | awk '{print $NF}')
-  img=$(ls -t "$HOME/.codex/generated_images/$sid"/ig_*.png | head -1)
-  "$PY" -c "from PIL import Image,ImageOps; ImageOps.fit(Image.open('$img'),(1080,1920),Image.LANCZOS).save('OUTDIR/$slug.png')"
-  i=$((i+1)); done
+for e in "${ENTRIES[@]}"; do job "${e%%|||*}" "${e##*|||}" "$i" & i=$((i+1)); done   # SINGLE WAVE: launch all, no K-barrier
+wait
+# verify: ls OUTDIR | wc -l   ·   for f in OUTDIR/*.png; do md5 -q "$f"; done | sort | uniq -d   (dupes → regen solo)
 ```
 
-**Scale (e.g. 50 images): bound the concurrency.** Don't launch 50 at once — you'll exhaust RAM and
-hit ChatGPT-plan rate/usage limits (the real bottleneck, not orchestration). Run a pool of **K≈5–6**
-at a time (`xargs -P K`, GNU `parallel`, or a counter that `wait`s every K), **retry** failed /
-moderation-blocked items (reword on moderation), and **run it in the background** (50 × ~60–120s,
-6-wide ≈ ~13 min — longer than one foreground call). Finish with a distinctness + count check.
+**Concurrency — go WIDE, single wave (measured + replicated: 2 brands, 6× K=50 runs, same-content A/B).**
+Counter-intuitively, **launch the whole batch at once with one `wait` (as the snippet above does) — do
+NOT split into K-sized waves with a barrier.** A `wait`-every-K loop drains and refills the API pipe at
+each wave edge and is much slower: 50 square posts ran **243 s at K=30 (2 waves) vs 144 s at K=50 (1 wave)**
+— ~40 % faster with no barrier. What the testing showed:
+- The API **pipelines ~25–30 concurrently**; a single wave keeps that pipe continuously full → fastest. Extra launches just queue (harmless), they don't stall at a barrier (costly).
+- **RAM:** a 50-wide wave peaks ~6–7 GB of `codex` RSS and saturates a 16 GB Mac (memory compressor pegged) — yet it's **stable: 0 failures across every K=50 run**. The machine's *baseline* fullness, not K, dominates memory; closing other apps helps more than lowering K. Only if RAM is genuinely tight, use a **rolling pool** (replace each finished job instantly, keep ~25–30 in flight) — caps RAM *without* the barrier stall. Never use the slow `wait`-every-K barrier.
+- The **only hard cap is your plan's usage quota** — not concurrency, not RAM. Hitting it returns in ~5 s per call with `ERROR: You've hit your usage limit … try again at <time>` and writes no image → detect that string and **abort** (the snippet's `USAGE_LIMIT` flag) instead of grinding out zeros.
+- **Run big batches in the background** (50 ≈ 2–3 min, can exceed the 600 s foreground cap), emit a `✓ <slug>` tick per completion so it isn't a silent void, **retry** failures once at lower concurrency (reword on moderation), and finish with a count + `md5` distinctness check.
 
 **Cross-platform.** This shell approach runs on macOS, Linux, and **Windows via Git Bash** (the shell
 Claude Code's Bash tool uses on Windows) — **not** PowerShell/cmd. Portability rules, all applied above:
