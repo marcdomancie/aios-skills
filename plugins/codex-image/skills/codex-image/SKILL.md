@@ -78,21 +78,65 @@ tool renders the PNG; save it where the user wants and Read it back so it shows 
 
 ## Running several at once (parallel / batch)
 
-Generating multiple images concurrently (e.g. one Codex run per subagent) is supported and fast —
-but two things bite if you're sloppy, both seen in practice:
+**Launcher choice — default to a shell loop, NOT one-agent-per-image.** The image work is the same
+`codex exec` call either way; the launcher only changes orchestration cost. A shell loop backgrounds
+N runs at once for ~free; spawning one subagent per image costs a full model context each
+(benchmarked head-to-head: **~316k tokens for 5 agents vs ~0 for the equivalent shell script**, same
+wall-clock and image quality) — and subagents can *misjudge* (in that test one bailed on a benign
+warning whose image had actually rendered fine). Reserve subagents for work that needs per-item
+*reasoning* (bespoke prompt design, self-critique-and-retry), never for mechanical fan-out.
 
+**Two things that bite under concurrency (both seen in practice):**
 1. **Never use a dir-wide "newest PNG" lookup across concurrent runs.** Each `codex exec` writes to
-   its OWN `~/.codex/generated_images/<SESSION_ID>/` subdir, so a global
-   `find ~/.codex/generated_images -mmin -N` will happily return a *sibling run's* image — and two
-   variations come back byte-identical. Resolve each output from its own session-id subdir (grab the
-   `session id:` line from that run's stdout), or have each run save to a UNIQUE `/tmp/<slug>-<n>.png`
-   and move it yourself.
-2. **Give every image a distinct filename up front** (`out-1.png`, `out-2.png`, …), and after the
-   batch, verify they actually differ — `md5 out-*.png`. Matching hashes = the cross-pick above;
-   regenerate the dupes **solo** (a single non-concurrent run can't cross-contaminate).
+   its OWN `~/.codex/generated_images/<SESSION_ID>/` subdir (the id is in its `session id:` stdout
+   line), so a global `find ~/.codex/generated_images -mmin -N` returns a *sibling run's* image and
+   two outputs come back byte-identical. Resolve each output from its own session-id subdir. Most
+   robust pattern: run **generate-only**, then resize/place each from its session dir yourself (this
+   also sidesteps the sandbox write-path trap — Codex only writes under `~/.codex`).
+2. **Distinct filenames up front, then verify.** Name each `out-1.png`, `out-2.png`… and after the
+   batch confirm they differ (`md5`/`md5sum`). Matching hashes = the cross-pick above → regenerate
+   dupes **solo**. md5 only catches *byte-identical* dupes, though — for a *variety* set also
+   **diversify setting + wardrobe in the prompts up front**, or you get five different-but-samey
+   shots that read as duplicates.
 
-Orchestrating with subagents: tell each agent to report its `SAVED:` path (ideally the `session id:`
-too), then you verify distinctness and re-run any duplicates yourself.
+**Reference pool (portable — see cross-platform notes below):**
+```bash
+CODEX="$(command -v codex || echo /Applications/Codex.app/Contents/Resources/codex)"
+PY="$(command -v python3 || command -v python)"
+WORK=/tmp/imgbatch; mkdir -p "$WORK"; i=0
+ENTRIES=("slug1|||scene one" "slug2|||scene two")          # one element per image
+for e in "${ENTRIES[@]}"; do                               # element-iteration: identical in zsh & bash
+  scene="${e##*|||}"
+  "$CODEX" exec --skip-git-repo-check -s workspace-write -c model_reasoning_effort="low" \
+    "<PREAMBLE> SCENE: $scene  Just generate the image; do not resize." </dev/null >"$WORK/log-$i.txt" 2>&1 &
+  i=$((i+1)); done
+wait
+i=0
+for e in "${ENTRIES[@]}"; do
+  slug="${e%%|||*}"; sid=$(grep -m1 'session id:' "$WORK/log-$i.txt" | awk '{print $NF}')
+  img=$(ls -t "$HOME/.codex/generated_images/$sid"/ig_*.png | head -1)
+  "$PY" -c "from PIL import Image,ImageOps; ImageOps.fit(Image.open('$img'),(1080,1920),Image.LANCZOS).save('OUTDIR/$slug.png')"
+  i=$((i+1)); done
+```
+
+**Scale (e.g. 50 images): bound the concurrency.** Don't launch 50 at once — you'll exhaust RAM and
+hit ChatGPT-plan rate/usage limits (the real bottleneck, not orchestration). Run a pool of **K≈5–6**
+at a time (`xargs -P K`, GNU `parallel`, or a counter that `wait`s every K), **retry** failed /
+moderation-blocked items (reword on moderation), and **run it in the background** (50 × ~60–120s,
+6-wide ≈ ~13 min — longer than one foreground call). Finish with a distinctness + count check.
+
+**Cross-platform.** This shell approach runs on macOS, Linux, and **Windows via Git Bash** (the shell
+Claude Code's Bash tool uses on Windows) — **not** PowerShell/cmd. Portability rules, all applied above:
+- **Arrays:** macOS's tool shell is often **zsh (1-indexed)**, Linux/Git-Bash is **bash (0-indexed)** —
+  a hardcoded `for i in 0 1 2 …` over an array silently shifts/drops on one of them. Iterate
+  **elements** (`for e in "${arr[@]}"`), identical in both.
+- **No `sips`** (macOS-only) — use **Python/PIL** for resize *and* dimensions.
+- **`md5` vs `md5sum`** — macOS has `md5 -q`, Linux/Git-Bash have `md5sum`; detect, or use Python `hashlib`.
+- **Resolve `codex` and `python`/`python3` dynamically** (`command -v`) — paths + interpreter names differ per OS.
+- If there is no bash-like shell at all, the subagent launcher is the shell-agnostic fallback (at the token cost above).
+
+Orchestrating with subagents (when warranted): tell each to report its `session id:` and resolve from
+that dir; then you verify distinctness and re-run any duplicates yourself.
 
 ## Sizes & resolution (verified empirically — the API docs do NOT apply here)
 
