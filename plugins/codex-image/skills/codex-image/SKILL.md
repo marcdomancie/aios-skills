@@ -78,6 +78,13 @@ tool renders the PNG; save it where the user wants and Read it back so it shows 
 
 ## Running several at once (parallel / batch)
 
+**Run the batch — don't over-orchestrate it.** The deliverable is images on disk, fast. A real session
+burned **~14 min on 50 images that should take ~3** by going off-task: building elaborate concept /
+matrix documents, smoke-testing one image then rewriting, debugging its own launcher twice, narrating
+tangents. For a batch request: pick sane defaults (ask at most ONE quick question, and only if genuinely
+blocked), **reuse the proven single-wave script below — do not re-derive it**, launch it in the
+background, and report. No planning docs, no smoke-test-then-rewrite loop, no tangents. Stay on the images.
+
 **Launcher choice — default to a shell loop, NOT one-agent-per-image.** The image work is the same
 `codex exec` call either way; the launcher only changes orchestration cost. A shell loop backgrounds
 N runs at once for ~free; spawning one subagent per image costs a full model context each
@@ -122,6 +129,16 @@ for e in "${ENTRIES[@]}"; do job "${e%%|||*}" "${e##*|||}" "$i" & i=$((i+1)); do
 wait
 # verify: ls OUTDIR | wc -l   ·   for f in OUTDIR/*.png; do md5 -q "$f"; done | sort | uniq -d   (dupes → regen solo)
 ```
+
+**Two foot-guns that silently waste a launch (both hit in practice):**
+- **Don't assemble the prompt preamble with `$(cat <<'EOF' … EOF)`.** Heredoc inside command-substitution
+  misparses on macOS bash — especially with `(` / `)` in the text — and the script dies *before generating
+  anything*. Assign it as a plain single-quoted variable instead: `PRE='…'`.
+- **Don't double-background.** When launching via the `run_in_background` tool, run the script **directly** —
+  never wrap it in `nohup … &` or a trailing `&`. Double-detaching means (a) the `✓` ticks never reach the
+  task-output file (the chip looks dead the whole time) and (b) the *completed* notification fires instantly
+  while work is still running, so you can't tell when it actually finished. The per-job `&` *inside* the
+  script is correct; the script itself stays foreground in the background shell.
 
 **Concurrency — go WIDE, single wave (measured + replicated: 2 brands, 6× K=50 runs, same-content A/B).**
 Counter-intuitively, **launch the whole batch at once with one `wait` (as the snippet above does) — do
