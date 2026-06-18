@@ -45,13 +45,17 @@ tool renders the PNG; save it where the user wants and Read it back so it shows 
    working directory, or wherever the user asked):
    ```bash
    "$CODEX" exec --skip-git-repo-check -s workspace-write -c model_reasoning_effort="low" \
-     "Generate ONE image in <ASPECT: square / wide landscape banner / portrait> composition. Subject: <USER'S PROMPT, verbatim + any style notes>. Then resize the result to EXACTLY <W>x<H> with Python PIL LANCZOS and save it as <OUTPATH> (copy from ~/.codex/generated_images/ if the image tool saves it elsewhere first). After saving, print the absolute path on its own line prefixed with 'SAVED: ' and the pixel dimensions prefixed with 'SIZE: '." </dev/null
+     "Generate ONE image in <ASPECT: square / wide landscape banner / portrait> composition. Subject: <USER'S PROMPT, verbatim + any style notes>. Then resize the result to EXACTLY <W>x<H> with python3 + PIL (use `ImageOps.fit` for exact dims without distortion) and save it as <OUTPATH> (if `<OUTPATH>` is outside the dir you launched Codex from, write to `/tmp/<slug>.png` and move it afterward — see Gotchas; locate the source in this run's own session-id dir, not a global glob). After saving, print the absolute path on its own line prefixed with 'SAVED: ' and the pixel dimensions prefixed with 'SIZE: '." </dev/null
    ```
    Skip the resize clause when the user doesn't need exact dimensions — the native render
    (~1–2.2 MP, see Sizes section) is fine on its own.
 
-3. Read the path from the `SAVED:` line (or `find ~/.codex/generated_images -iname '*.png' -mmin -5`),
-   then **Read the PNG** so it renders inline.
+3. Read the path from the `SAVED:` line, then **Read the PNG** so it renders inline. If you must
+   find the file yourself, scope it to THIS run's own session dir —
+   `~/.codex/generated_images/<SESSION_ID>/ig_*.png`, where `<SESSION_ID>` is the value Codex prints
+   in its `session id:` startup line. Do NOT use a dir-wide newest-file glob like
+   `find ~/.codex/generated_images -mmin -5` — it cross-picks other runs' images under parallelism
+   (see "Running several at once").
 
 ## Gotchas (already solved — don't re-derive these)
 - `--skip-git-repo-check` is REQUIRED, or Codex refuses to run outside a trusted/git directory.
@@ -59,8 +63,36 @@ tool renders the PNG; save it where the user wants and Read it back so it shows 
 - `</dev/null` stops `codex exec` from hanging while it waits on stdin.
 - `-c model_reasoning_effort="low"` keeps it fast/cheap — Codex may default to a high reasoning
   effort, which is overkill for image gen and burns far more plan tokens.
-- The raw image ALWAYS lands in `~/.codex/generated_images/<session>/ig_*.png` first. Copy (don't
-  move) it to the requested path.
+- The raw image ALWAYS lands in `~/.codex/generated_images/<SESSION_ID>/ig_*.png` first — each run
+  gets its OWN session-id subdir (the id is in Codex's `session id:` startup line). Copy (don't
+  move) it to the requested path, and resolve it from THAT subdir — never a dir-wide newest-file
+  glob, which breaks under parallelism (see "Running several at once").
+- `-s workspace-write` only allows writes under the Codex **workdir + `/tmp` + `$TMPDIR`**, NOT
+  arbitrary paths. If `<OUTPATH>` is outside the dir you launched Codex from, the save fails with
+  `PermissionError` and Codex quietly falls back to `/tmp`. Don't assume cwd == output location —
+  they differ whenever you invoke this skill from one repo but target another. Robust fix: have
+  Codex save to `/tmp/<slug>.png` and `mv` it to `<OUTPATH>` yourself; or pass `--cd <output-dir>`
+  so the destination is inside the workspace.
+- Use **`python3`** (not `python`) for the resize — bare `python` is usually not on PATH and Codex
+  hits `command not found: python`.
+
+## Running several at once (parallel / batch)
+
+Generating multiple images concurrently (e.g. one Codex run per subagent) is supported and fast —
+but two things bite if you're sloppy, both seen in practice:
+
+1. **Never use a dir-wide "newest PNG" lookup across concurrent runs.** Each `codex exec` writes to
+   its OWN `~/.codex/generated_images/<SESSION_ID>/` subdir, so a global
+   `find ~/.codex/generated_images -mmin -N` will happily return a *sibling run's* image — and two
+   variations come back byte-identical. Resolve each output from its own session-id subdir (grab the
+   `session id:` line from that run's stdout), or have each run save to a UNIQUE `/tmp/<slug>-<n>.png`
+   and move it yourself.
+2. **Give every image a distinct filename up front** (`out-1.png`, `out-2.png`, …), and after the
+   batch, verify they actually differ — `md5 out-*.png`. Matching hashes = the cross-pick above;
+   regenerate the dupes **solo** (a single non-concurrent run can't cross-contaminate).
+
+Orchestrating with subagents: tell each agent to report its `SAVED:` path (ideally the `session id:`
+too), then you verify distinctness and re-run any duplicates yourself.
 
 ## Sizes & resolution (verified empirically — the API docs do NOT apply here)
 
@@ -75,9 +107,12 @@ What you CAN control, and how:
   - "wide landscape banner" → ~2.4:1 (e.g. 1949x807, 2172x724)
   - "portrait" → ~2:3 (e.g. 1024x1536)
   - Ratios cap at ~3:1; don't ask for wider.
-- **Exact dimensions** — generate at the right aspect ratio, then resize locally with Python PIL
-  LANCZOS (or `sips` on macOS). Tell Codex to do this in the same `exec` call: "...then resize the
-  result to EXACTLY <W>x<H> with Python PIL LANCZOS and save as <OUTPATH>."
+- **Exact dimensions** — generate at the right aspect ratio, then resize locally. Use **`python3`**
+  + PIL `ImageOps.fit(im, (W,H), Image.LANCZOS)` (cover + center-crop → exact size, no distortion);
+  a plain `resize((W,H))` stretches faces when the aspect differs. `sips` works on macOS too. Tell
+  Codex to do this in the same `exec` call: "...then resize the result to EXACTLY <W>x<H> with
+  python3 PIL ImageOps.fit (LANCZOS) and save as <OUTPATH>." (Bare `python` is usually not on
+  PATH — use `python3`.)
 - Common targets: square post 1080x1080 (gen square), FB cover ~2.05:1 (gen wide banner),
   IG story 1080x1920 (gen portrait), YT thumbnail 1280x720 (gen landscape).
 - **Upscales add pixels, not detail** — a 2x LANCZOS upscale of a ~2MP native render is fine for
@@ -86,8 +121,9 @@ What you CAN control, and how:
 
 ## Reference images & edits (verified working)
 
-The built-in tool handles generate-from-reference and edits — the input image just has to be a
-**file on disk**, loaded into Codex's context first:
+The built-in tool handles generate-from-reference and edits — but the reference **must be a real
+file on disk that Codex can open by absolute path** (its `view_image` tool reads from the
+filesystem, nothing else). Settle this BEFORE you generate:
 - In the prompt, tell Codex: "First, load <ABSPATH> with your view_image tool. It is a STYLE
   REFERENCE ONLY (not an edit target): <describe what to take from it>." Then describe the new
   image. Labeling the role matters — Codex distinguishes style reference / edit target /
@@ -96,10 +132,15 @@ The built-in tool handles generate-from-reference and edits — the input image 
 - Edits support object removal/replacement, text replacement, lighting/weather, style transfer,
   identity-preserve, sketch-to-render. Mask-guided edits are prompt-based guidance, not
   pixel-precise.
-- **Pasted chat images are NOT on disk.** Extract the base64 image block from the newest session
-  transcript (`~/.claude/projects/<project-slug>/*.jsonl` — records have
-  `message.content[].type == "image"` with `source.data`) and write it to a file first, then pass
-  that path. Or just ask the user for a file path.
+- **A pasted/inline chat image is NOT something Codex can use — and you can't hand it through
+  either.** When the user pastes an image into chat, you (Claude) can *see* it, but Codex's
+  `view_image` has no file to open, so the reference is effectively lost unless you put it on disk
+  first. In order of reliability: (1) **ask the user for the file path** — by far the most reliable,
+  and the recommended default; (2) only if they can't, extract the base64 block from the newest
+  session transcript (`~/.claude/projects/<project-slug>/*.jsonl` — records have
+  `message.content[].type == "image"` with `source.data` + `source.media_type`), decode it to a temp
+  file, and pass that path — then confirm the written file opens and is the right image before
+  relying on it.
 
 ## Model facts that DO carry over from the gpt-image-2 API docs
 
