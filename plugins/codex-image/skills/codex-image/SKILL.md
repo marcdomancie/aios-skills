@@ -8,7 +8,11 @@ description: Generate images through OpenAI's image model using your ChatGPT/Cod
 Generate images via OpenAI's image model, billed against your **ChatGPT/Codex subscription**
 (`~/.codex/auth.json` in `auth_mode: chatgpt`, `OPENAI_API_KEY: null` — so no API key and no
 per-image dollar cost; it consumes your ChatGPT/Codex usage limits). The bundled Codex CLI's image
-tool renders the PNG; save it where the user wants and Read it back so it shows inline.
+tool renders the PNG; save it where the user wants and Read it back so it shows inline. It also
+**edits and iterates** on existing images (resend the PNG — see that section). Note up front:
+gpt-image-2's `quality` / `n` / `size` API parameters are **not** available on this ChatGPT-plan
+path — they're API-key-only. Here you steer results by **prompt craft + regeneration** (capability
+table below).
 
 ## Prerequisites
 - **Codex** installed:
@@ -61,8 +65,13 @@ tool renders the PNG; save it where the user wants and Read it back so it shows 
 - `--skip-git-repo-check` is REQUIRED, or Codex refuses to run outside a trusted/git directory.
 - `-s workspace-write` is REQUIRED so it can write the file to disk.
 - `</dev/null` stops `codex exec` from hanging while it waits on stdin.
-- `-c model_reasoning_effort="low"` keeps it fast/cheap — Codex may default to a high reasoning
-  effort, which is overkill for image gen and burns far more plan tokens.
+- `-c model_reasoning_effort="low"` is the right default and keeps it fast. **Tested low-vs-high
+  head-to-head (3×3 on a detailed prompt + 3×3 on a terse one): `high` gave no reliable quality
+  gain.** gpt-image-2 renders the image either way; effort only changes how much the agent elaborates
+  the prompt, which varied run-to-run *independent* of the setting (on the terse prompt the richest
+  outputs were actually `low`). Tokens were ~equal (variance tracked agent iteration, not effort —
+  one `low` run used 23k vs a `high` run's 17k), and `high` trended slower. Net: `low` = equal-or-better
+  output, same token cost, lower latency. Pass `high` only to experiment; don't expect a quality lift.
 - The raw image ALWAYS lands in `~/.codex/generated_images/<SESSION_ID>/ig_*.png` first — each run
   gets its OWN session-id subdir (the id is in Codex's `session id:` startup line). Copy (don't
   move) it to the requested path, and resolve it from THAT subdir — never a dir-wide newest-file
@@ -75,6 +84,30 @@ tool renders the PNG; save it where the user wants and Read it back so it shows 
   so the destination is inside the workspace.
 - Use **`python3`** (not `python`) for the resize — bare `python` is usually not on PATH and Codex
   hits `command not found: python`.
+
+## Variations & multiple outputs (e.g. 5 logos)
+
+The API's `n` (N variants of one prompt) **isn't available on this path** (see capability table), so
+you get N outputs by **looping one generate call per variant** — exactly the batch machinery below.
+Codex's own image skill says the same: "produce many assets or variants by issuing one call per
+asset; do not use `n` as a substitute." For a logo/option set:
+- Run **K = N** generate calls (the reference batch handles this).
+- **Diversify the wording per variant** (different layout, letterform, motif, palette) or you get
+  five different-but-samey marks that read as dupes. `md5` only catches *byte-identical* dupes.
+- Verify distinctness afterward (`md5`) and regenerate any dupes **solo**.
+- Logos are text-heavy — recheck spelling on each and regenerate typos.
+
+Drop these into the reference batch's `ENTRIES=(...)` for a 5-logo run (one `image_gen` call each —
+distinct prompts, not `n`):
+```bash
+ENTRIES=(
+  "logo-1|||wordmark for 'Field & Flour' bakery: clean serif, wheat-stalk ligature, cream/charcoal, flat, centered, generous padding, plain background, no watermark"
+  "logo-2|||circular badge for 'Field & Flour': bread-loaf icon, ring of text, two-tone, balanced negative space, flat vector, plain background"
+  "logo-3|||minimal monogram 'F&F': geometric sans, single-weight strokes, high contrast, scalable, flat, plain background"
+  "logo-4|||hand-drawn script logo for 'Field & Flour': friendly brush lettering, small wheat motif, earthy palette, plain background"
+  "logo-5|||abstract mark for 'Field & Flour': grain + sun negative-space symbol above the name, modern, flat, plain background"
+)
+```
 
 ## Running several at once (parallel / batch)
 
@@ -163,14 +196,44 @@ Claude Code's Bash tool uses on Windows) — **not** PowerShell/cmd. Portability
 Orchestrating with subagents (when warranted): tell each to report its `session id:` and resolve from
 that dir; then you verify distinctness and re-run any duplicates yourself.
 
-## Sizes & resolution (verified empirically — the API docs do NOT apply here)
+## What you can and can't control (gpt-image-2 API params vs. this ChatGPT-plan path)
 
-The OpenAI Image API exposes `size` (any WxH up to 3840px edge, 4K) and `quality` (low/medium/high)
-parameters — but **Codex's built-in image tool on ChatGPT auth exposes NONE of them**. It is
-prompt-only: explicit pixel requests like "generate at 3840x2160" are silently ignored (tested:
-came back 1672x941). Native output is always ~1–2.2 MP at model-chosen dimensions.
+The OpenAI cookbook documents `quality`, `n`, `size`, `input_fidelity`, and `background` as **API
+parameters**. On the path this skill uses — the model-invoked **built-in `image_gen` tool under
+ChatGPT auth** — NONE of them are settable. They are "fallback-CLI-only execution controls" (Codex's
+own wording). Codex *does* ship a fallback CLI (`~/.codex/skills/.system/imagegen/scripts/image_gen.py`)
+that exposes all of them, but it calls the Image API with a bare `OpenAI()` client and
+**hard-requires `OPENAI_API_KEY`** — i.e. real per-image API billing, which defeats this skill's whole
+no-API-key premise. (Verified against Codex 0.142.0: the built-in tool is prompt-only; explicit pixel
+requests like "generate at 3840x2160" are silently ignored — came back 1672x941.)
 
-What you CAN control, and how:
+| Cookbook API param | On this ChatGPT-plan path | Equivalent here |
+|---|---|---|
+| `quality: low/medium/high/auto` (CLI default `medium`) | **Not settable.** The built-in tool uses its own default, and gpt-image-2 is high-fidelity by default. | Push fidelity through the **prompt** ("photorealistic", "crisp legible text", state the intended use) and **regenerate** weak results. A literal `quality=high` needs the CLI fallback + API key. |
+| `n: 1–10` (variants of one prompt) | **Not settable** — one image per call. | **Loop one call per variant** → see *Variations & multiple outputs*. |
+| `size` (up to 4K) | **Not settable** — model picks ~1–2.2 MP. | Steer **aspect** by wording (below) + resize locally. Native 4K needs the CLI fallback + API key. |
+| `input_fidelity: low/high` (edit-only) | **N/A** — gpt-image-2 always uses high input fidelity. | Nothing to set. |
+| `background: transparent` | **Not on gpt-image-2.** | Ask for "a transparent PNG" — Codex runs a chroma-key + local-removal pipeline itself. |
+
+Bottom line: the cookbook is right that `high` looks better and `n` gives you N outputs — those are
+just **API-key features**, not plan features. On the plan, "higher quality" = better prompting +
+regeneration, and "N outputs" = loop the call. (Don't confuse the image `quality` param with
+`model_reasoning_effort` — a *separate* agent-thinking knob; bumping it to `high` was tested and gives
+no quality lift, see Gotchas.) Only reach for the CLI fallback (and an
+`OPENAI_API_KEY`, with the user's explicit OK since it bills per image) when they genuinely need true
+`quality=high`, native 4K, real `n`, masks, or model-native transparency:
+
+```bash
+export OPENAI_API_KEY=sk-...        # real API billing applies — opt-in only
+python "$HOME/.codex/skills/.system/imagegen/scripts/image_gen.py" generate \
+  --prompt "<prompt>" --quality high --size 3840x2160 --n 4 --out-dir ./out
+# subcommands: generate | edit | generate-batch ;  --quality low|medium|high|auto ;  --n 1–10 ;
+# edit adds --image/--mask.  Never modify that script.
+```
+
+## Sizes & aspect ratio
+
+Native output is always ~1–2.2 MP at model-chosen dimensions. What you CAN control, and how:
 - **Aspect ratio** — steer it with prompt wording, it works reliably:
   - "square composition" → ~1024–1254px square
   - "wide landscape banner" → ~2.4:1 (e.g. 1949x807, 2172x724)
@@ -188,19 +251,42 @@ What you CAN control, and how:
   display sharpness, but tell the user that real detail tops out at the native render. True native
   4K requires the Image API with an `OPENAI_API_KEY` (Codex's CLI fallback) — not ChatGPT auth.
 
-## Reference images & edits (verified working)
+## Reference images, edits & iterating (resend the previous image)
 
-The built-in tool handles generate-from-reference and edits — but the reference **must be a real
-file on disk that Codex can open by absolute path** (its `view_image` tool reads from the
-filesystem, nothing else). Settle this BEFORE you generate:
-- In the prompt, tell Codex: "First, load <ABSPATH> with your view_image tool. It is a STYLE
-  REFERENCE ONLY (not an edit target): <describe what to take from it>." Then describe the new
-  image. Labeling the role matters — Codex distinguishes style reference / edit target /
-  compositing input.
-- Multiple references work (e.g. product shot + scene → composite; several items → one image).
-- Edits support object removal/replacement, text replacement, lighting/weather, style transfer,
-  identity-preserve, sketch-to-render. Mask-guided edits are prompt-based guidance, not
-  pixel-precise.
+The built-in tool does generate-from-reference AND edits/revisions — but Codex can only act on an
+image it can actually see, and **each `codex exec` is a fresh session with no memory of earlier
+runs.** So to edit or iterate on an image you (or it) already made, you must **re-send that PNG every
+time.** Two ways to hand Codex a file (both need a real file on disk + absolute path — its tools read
+from the filesystem, nothing else):
+
+1. **`-i <abspath>` flag (cleanest)** — attaches the image to the prompt so Codex sees it:
+   ```bash
+   "$CODEX" exec --skip-git-repo-check -s workspace-write -c model_reasoning_effort="low" \
+     "The attached image is the EDIT TARGET. Change ONLY <X>; keep everything else identical. Save as <OUTPATH>." \
+     -i "<ABSPATH-of-previous.png>" </dev/null
+   ```
+   ⚠️ **`-i` is variadic (`--image <FILE>...`)** — put the prompt FIRST and `-i` LAST, or `-i`
+   swallows your prompt as a second filename and the run dies with "No prompt provided via stdin"
+   (verified foot-gun).
+2. **`view_image` in the prompt** — "First, load <ABSPATH> with your view_image tool. It is a STYLE
+   REFERENCE ONLY (not an edit target): <what to take from it>." Then describe the new image.
+
+**The revision loop (drift control):** resend the latest PNG as the edit target and say **"change
+ONLY X, keep everything else the same"** — and repeat the *full* preserve list on EVERY iteration, or
+Codex drifts. One targeted change at a time beats rewriting the whole prompt. Save non-destructively
+(`hero-v2.png`, not overwriting `hero.png`) so you can fall back.
+
+**Mechanical edit vs generative re-render (Codex is a coding agent):** for a purely mechanical change
+(recolor a flat shape, crop, paste text, composite PNGs) Codex may just write a **PIL** script
+instead of calling the image model — fast and exact, but it won't re-imagine anything. To force a
+true re-render ("make the lighting warmer", "turn this sketch photoreal"), say **"use your image
+generation tool to re-render…"**. (Both verified: a flat-circle→blue recolor went through PIL; the
+same circle → "glossy 3D glass sphere" went through the image model.)
+
+- Label each input by role — Codex distinguishes **style reference / edit target / compositing input**.
+- Multiple references/inputs work (e.g. product shot + scene → composite; several items → one image).
+- Edits cover object removal/replacement, text replacement, lighting/weather, style transfer,
+  identity-preserve, sketch-to-render. Mask-guided edits are prompt-based guidance, not pixel-precise.
 - **A pasted/inline chat image is NOT something Codex can use — and you can't hand it through
   either.** When the user pastes an image into chat, you (Claude) can *see* it, but Codex's
   `view_image` has no file to open, so the reference is effectively lost unless you put it on disk
@@ -210,6 +296,37 @@ filesystem, nothing else). Settle this BEFORE you generate:
   `message.content[].type == "image"` with `source.data` + `source.media_type`), decode it to a temp
   file, and pass that path — then confirm the written file opens and is the right image before
   relying on it.
+
+## Prompting for better results (use-case recipes)
+
+On the plan path, **prompt quality IS your quality dial** — there's no `quality=high` knob, so this is
+where fidelity comes from. These principles are shared by Codex's own bundled image skill, so they
+match the engine:
+- **Structure:** scene/backdrop → subject → key details → constraints → intended use ("for an ad",
+  "a UI mock", "an infographic") to set the polish level. Short labeled lines beat one long paragraph.
+- **Be specific** about materials, shapes, textures, and the medium (photo / watercolor / 3D render).
+- **Photorealism:** put the word "photorealistic" in the prompt + real-texture cues (pores, fabric
+  wear, grain); name lens / lighting / framing for the *look* (exact camera specs are read loosely).
+- **Text in images:** quote exact copy or ALL-CAPS it, demand verbatim rendering, specify
+  font / size / placement; spell tricky words letter-by-letter. Text is good but imperfect — recheck
+  and regenerate typos.
+- **Constraints / invariants:** state what must NOT change; for edits, "change only X, keep the rest."
+- **Iterate** one small change at a time and resend the prior image (see the edits section).
+
+Quick recipes — distill the user's intent into one, then add only what materially helps:
+- **Logo:** "original, non-infringing logo for <brand>, <personality>. Clean vector-like shapes,
+  strong silhouette, balanced negative space, scalable, flat, minimal strokes, plain background, one
+  centered mark, generous padding, no watermark." (For a set, see *Variations & multiple outputs*.)
+- **Infographic / diagram:** name audience + flow, label parts explicitly, require verbatim text,
+  white background, clear arrows, scan-friendly whitespace. Dense text → regenerate until legible.
+- **Product mockup:** product + materials, clean silhouette, label legibility, plain/opaque
+  background, subtle contact shadow; "do not restyle the product."
+- **UI mockup:** "realistic mobile/web UI mockup, as if already shipped" — layout, hierarchy, real
+  controls; avoid concept-art language; optionally "in an iPhone frame."
+- **Ad / marketing:** write a brief — brand positioning, audience, vibe, scene, and the exact tagline
+  in quotes rendered once; "no extra text, no watermarks, no unrelated logos."
+- **Photoreal scene / portrait:** candid framing, real skin/material texture, natural light, "no
+  glamorization, no heavy retouching."
 
 ## Model facts that DO carry over from the gpt-image-2 API docs
 
@@ -227,7 +344,8 @@ filesystem, nothing else). Settle this BEFORE you generate:
   (`~` = `%USERPROFILE%`, Windows env vars like `$LOCALAPPDATA` are inherited). Generated
   images land in `%USERPROFILE%\.codex\generated_images\` just like on macOS/Linux.
 - Usage counts against your ChatGPT/Codex plan limits, not API billing.
-- For several images, ask Codex for variations in one call, or loop the command.
+- For several images or variations, loop one call per output — see **Variations & multiple outputs**
+  and **Running several at once**. (`n` for true one-call variants is API-key / CLI-fallback only.)
 - Swap in `-m <model>` to force a cheaper/faster agent model.
 - Same engine as the `codex-image-bridge` plugin (RolandOne/codex-image-generation), but
   PATH-independent and self-owned — no third-party plugin auto-running shell.

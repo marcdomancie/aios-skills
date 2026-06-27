@@ -43,6 +43,8 @@ Just ask naturally (the description triggers it), or call it directly:
 "make an image of a friendly orange robot with Codex"
 "generate a square app icon on my ChatGPT plan, 1024x1024"
 "recreate this in the style of ~/assets/reference.jpg"
+"make 5 logo options for 'Field & Flour' on my ChatGPT plan"
+"revise ./hero.png — make the lighting warmer, keep everything else the same"
 ```
 
 The generated PNG saves to wherever you ask (default: current folder) and shows inline.
@@ -59,10 +61,31 @@ silently ignores explicit pixel requests. What works:
   around 2 MP. (The API's native-4K `size`/`quality` params need an `OPENAI_API_KEY` — not this
   ChatGPT-auth path.)
 
-### Reference images & edits
+### Quality & multiple outputs — what the plan path can do
+
+gpt-image-2's `quality` (low/medium/high), `n` (multiple outputs), and `size` are **API parameters,
+not built-in-tool controls** — so on the ChatGPT-plan path they aren't settable. They live only in
+Codex's fallback CLI, which calls the real Image API and **requires an `OPENAI_API_KEY`** (= real
+per-image billing). On the plan:
+
+- **Higher quality** = sharper prompting + regeneration. The built-in tool is already high-fidelity
+  by default; say *"photorealistic"*, demand *"crisp legible text"*, and state the intended use.
+- **Multiple outputs** (e.g. 5 logo options) = the skill **loops one generation per variant** with
+  diversified prompts, then checks they're distinct. (`n` proper is the API-key path only.)
+- True `quality=high`, native 4K, real `n`, masks, or model-native transparency → only via the
+  CLI fallback + your own API key, with your explicit OK.
+
+### Reference images, edits & revisions
 
 Point it at any image file on disk and it can use it as a style reference, edit target, or
 compositing input — style transfer, object replacement, text replacement, sketch-to-render.
+
+**To revise an image you already made, the previous PNG gets re-sent** (each Codex run is a fresh
+session with no memory): the skill re-attaches it and tells Codex *"change only X, keep everything
+else the same."* For mechanical tweaks (recolor, crop, overlay text) Codex may edit it with a quick
+script; for creative changes (*"warmer lighting"*, *"turn this sketch photoreal"*) it re-renders with
+the image model.
+
 Transparent backgrounds work via Codex's built-in chroma-key + local removal pipeline (just ask
 for "a transparent PNG").
 
